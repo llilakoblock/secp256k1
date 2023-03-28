@@ -1,7 +1,7 @@
 # The safegcd implementation in libsecp256k1 explained
 
-This document explains the modular inverse and Jacobi symbol implementations in the `src/modinv*.h` files.
-It is based on the paper
+This document explains the modular inverse implementation in the `src/modinv*.h` files. It is based
+on the paper
 ["Fast constant-time gcd computation and modular inversion"](https://gcd.cr.yp.to/papers.html#safegcd)
 by Daniel J. Bernstein and Bo-Yin Yang. The references below are for the Date: 2019.04.13 version.
 
@@ -244,8 +244,8 @@ def modinv(M, Mi, x):
 
 This means that in practice we'll always perform a multiple of *N* divsteps. This is not a problem
 because once *g=0*, further divsteps do not affect *f*, *g*, *d*, or *e* anymore (only *&delta;* keeps
-increasing). For variable time code such excess iterations will be mostly optimized away in later
-sections.
+increasing). For variable time code such excess iterations will be mostly optimized away in
+section 6.
 
 
 ## 4. Avoiding modulus operations
@@ -410,7 +410,7 @@ sufficient even. Given that every loop iteration performs *N* divsteps, it will 
 
 To deal with the branches in `divsteps_n_matrix` we will replace them with constant-time bitwise
 operations (and hope the C compiler isn't smart enough to turn them back into branches; see
-`ctime_tests.c` for automated tests that this isn't the case). To do so, observe that a
+`valgrind_ctime_test.c` for automated tests that this isn't the case). To do so, observe that a
 divstep can be written instead as (compare to the inner loop of `gcd` in section 1).
 
 ```python
@@ -519,20 +519,6 @@ computation:
     g >>= 1
 ```
 
-A variant of divsteps with better worst-case performance can be used instead: starting *&delta;* at
-*1/2* instead of *1*. This reduces the worst case number of iterations to *590* for *256*-bit inputs
-(which can be shown using convex hull analysis). In this case, the substitution *&zeta;=-(&delta;+1/2)*
-is used instead to keep the variable integral. Incrementing *&delta;* by *1* still translates to
-decrementing *&zeta;* by *1*, but negating *&delta;* now corresponds to going from *&zeta;* to *-(&zeta;+1)*, or
-*~&zeta;*. Doing that conditionally based on *c3* is simply:
-
-```python
-    ...
-    c3 = c1 & c2
-    zeta ^= c3
-    ...
-```
-
 By replacing the loop in `divsteps_n_matrix` with a variant of the divstep code above (extended to
 also apply all *f* operations to *u*, *v* and all *g* operations to *q*, *r*), a constant-time version of
 `divsteps_n_matrix` is obtained. The full code will be in section 7.
@@ -549,8 +535,7 @@ other cases, it slows down calculations unnecessarily. In this section, we will 
 faster non-constant time `divsteps_n_matrix` function.
 
 To do so, first consider yet another way of writing the inner loop of divstep operations in
-`gcd` from section 1. This decomposition is also explained in the paper in section 8.2. We use
-the original version with initial *&delta;=1* and *&eta;=-&delta;* here.
+`gcd` from section 1. This decomposition is also explained in the paper in section 8.2.
 
 ```python
 for _ in range(N):
@@ -569,14 +554,8 @@ bits efficiently, which is possible on most platforms; it is abstracted here as 
 
 ```python
 def count_trailing_zeros(v):
-    """
-    When v is zero, consider all N zero bits as "trailing".
-    For a non-zero value v, find z such that v=(d<<z) for some odd d.
-    """
-    if v == 0:
-        return N
-    else:
-        return (v & -v).bit_length() - 1
+    """For a non-zero value v, find z such that v=(d<<z) for some odd d."""
+    return (v & -v).bit_length() - 1
 
 i = N # divsteps left to do
 while True:
@@ -607,7 +586,7 @@ becomes negative, or when *i* reaches *0*. Combined, this is equivalent to addin
 It is easy to find what that multiple is: we want a number *w* such that *g+w&thinsp;f* has a few bottom
 zero bits. If that number of bits is *L*, we want *g+w&thinsp;f mod 2<sup>L</sup> = 0*, or *w = -g/f mod 2<sup>L</sup>*. Since *f*
 is odd, such a *w* exists for any *L*. *L* cannot be more than *i* steps (as we'd finish the loop before
-doing more) or more than *&eta;+1* steps (as we'd run `eta, f, g = -eta, g, -f` at that point), but
+doing more) or more than *&eta;+1* steps (as we'd run `eta, f, g = -eta, g, f` at that point), but
 apart from that, we're only limited by the complexity of computing *w*.
 
 This code demonstrates how to cancel up to 4 bits per step:
@@ -624,7 +603,7 @@ while True:
         break
     # We know g is odd now
     if eta < 0:
-        eta, f, g = -eta, g, -f
+        eta, f, g = -eta, g, f
     # Compute limit on number of bits to cancel
     limit = min(min(eta + 1, i), 4)
     # Compute w = -g/f mod 2**limit, using the table value for -1/f mod 2**4. Note that f is
@@ -664,24 +643,24 @@ All together we need the following functions:
   section 5, extended to handle *u*, *v*, *q*, *r*:
 
 ```python
-def divsteps_n_matrix(zeta, f, g):
-    """Compute zeta and transition matrix t after N divsteps (multiplied by 2^N)."""
+def divsteps_n_matrix(eta, f, g):
+    """Compute eta and transition matrix t after N divsteps (multiplied by 2^N)."""
     u, v, q, r = 1, 0, 0, 1 # start with identity matrix
     for _ in range(N):
-        c1 = zeta >> 63
+        c1 = eta >> 63
         # Compute x, y, z as conditionally-negated versions of f, u, v.
         x, y, z = (f ^ c1) - c1, (u ^ c1) - c1, (v ^ c1) - c1
         c2 = -(g & 1)
         # Conditionally add x, y, z to g, q, r.
         g, q, r = g + (x & c2), q + (y & c2), r + (z & c2)
         c1 &= c2                     # reusing c1 here for the earlier c3 variable
-        zeta = (zeta ^ c1) - 1       # inlining the unconditional zeta decrement here
+        eta = (eta ^ c1) - (c1 + 1)  # inlining the unconditional eta decrement here
         # Conditionally add g, q, r to f, u, v.
         f, u, v = f + (g & c1), u + (q & c1), v + (r & c1)
         # When shifting g down, don't shift q, r, as we construct a transition matrix multiplied
         # by 2^N. Instead, shift f's coefficients u and v up.
         g, u, v = g >> 1, u << 1, v << 1
-    return zeta, (u, v, q, r)
+    return eta, (u, v, q, r)
 ```
 
 - The functions to update *f* and *g*, and *d* and *e*, from section 2 and section 4, with the constant-time
@@ -702,7 +681,7 @@ def update_de(d, e, t, M, Mi):
     cd, ce = (u*d + v*e) % 2**N, (q*d + r*e) % 2**N
     md -= (Mi*cd + md) % 2**N
     me -= (Mi*ce + me) % 2**N
-    cd, ce = u*d + v*e + M*md, q*d + r*e + M*me
+    cd, ce = u*d + v*e + Mi*md, q*d + r*e + Mi*me
     return cd >> N, ce >> N
 ```
 
@@ -723,15 +702,15 @@ def normalize(sign, v, M):
     return v
 ```
 
-- And finally the `modinv` function too, adapted to use *&zeta;* instead of *&delta;*, and using the fixed
+- And finally the `modinv` function too, adapted to use *&eta;* instead of *&delta;*, and using the fixed
   iteration count from section 5:
 
 ```python
 def modinv(M, Mi, x):
     """Compute the modular inverse of x mod M, given Mi=1/M mod 2^N."""
-    zeta, f, g, d, e = -1, M, x, 0, 1
-    for _ in range((590 + N - 1) // N):
-        zeta, t = divsteps_n_matrix(zeta, f % 2**N, g % 2**N)
+    eta, f, g, d, e = -1, M, x, 0, 1
+    for _ in range((724 + N - 1) // N):
+        eta, t = divsteps_n_matrix(-eta, f % 2**N, g % 2**N)
         f, g = update_fg(f, g, t)
         d, e = update_de(d, e, t, M, Mi)
     return normalize(f, d, M)
@@ -769,51 +748,3 @@ def modinv_var(M, Mi, x):
         d, e = update_de(d, e, t, M, Mi)
     return normalize(f, d, Mi)
 ```
-
-## 8. From GCDs to Jacobi symbol
-
-We can also use a similar approach to calculate Jacobi symbol *(x | M)* by keeping track of an
-extra variable *j*, for which at every step *(x | M) = j (g | f)*. As we update *f* and *g*, we
-make corresponding updates to *j* using
-[properties of the Jacobi symbol](https://en.wikipedia.org/wiki/Jacobi_symbol#Properties):
-* *((g/2) | f)* is either *(g | f)* or *-(g | f)*, depending on the value of *f mod 8* (negating if it's *3* or *5*).
-* *(f | g)* is either *(g | f)* or *-(g | f)*, depending on *f mod 4* and *g mod 4* (negating if both are *3*).
-
-These updates depend only on the values of *f* and *g* modulo *4* or *8*, and can thus be applied
-very quickly, as long as we keep track of a few additional bits of *f* and *g*. Overall, this
-calculation is slightly simpler than the one for the modular inverse because we no longer need to
-keep track of *d* and *e*.
-
-However, one difficulty of this approach is that the Jacobi symbol *(a | n)* is only defined for
-positive odd integers *n*, whereas in the original safegcd algorithm, *f, g* can take negative
-values. We resolve this by using the following modified steps:
-
-```python
-        # Before
-        if delta > 0 and g & 1:
-            delta, f, g = 1 - delta, g, (g - f) // 2
-
-        # After
-        if delta > 0 and g & 1:
-            delta, f, g = 1 - delta, g, (g + f) // 2
-```
-
-The algorithm is still correct, since the changed divstep, called a "posdivstep" (see section 8.4
-and E.5 in the paper) preserves *gcd(f, g)*. However, there's no proof that the modified algorithm
-will converge. The justification for posdivsteps is completely empirical: in practice, it appears
-that the vast majority of nonzero inputs converge to *f=g=gcd(f<sub>0</sub>, g<sub>0</sub>)* in a
-number of steps proportional to their logarithm.
-
-Note that:
-- We require inputs to satisfy *gcd(x, M) = 1*, as otherwise *f=1* is not reached.
-- We require inputs *x &neq; 0*, because applying posdivstep with *g=0* has no effect.
-- We need to update the termination condition from *g=0* to *f=1*.
-
-We account for the possibility of nonconvergence by only performing a bounded number of
-posdivsteps, and then falling back to square-root based Jacobi calculation if a solution has not
-yet been found.
-
-The optimizations in sections 3-7 above are described in the context of the original divsteps, but
-in the C implementation we also adapt most of them (not including "avoiding modulus operations",
-since it's not necessary to track *d, e*, and "constant-time operation", since we never calculate
-Jacobi symbols for secret data) to the posdivsteps version.
